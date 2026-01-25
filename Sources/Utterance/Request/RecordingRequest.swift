@@ -46,6 +46,7 @@ public final class RecordingRequest: @unchecked Sendable {
     private var didFailHandler: ErrorHandler?
     private var responseCompletion: (@Sendable (Result<RecordingResult, UtteranceError>) -> Void)?
     private var responseQueue: DispatchQueue = .main
+    private var transcriptItemHandler: (@Sendable (TranscriptItem) -> Void)?
 
     // MARK: - Interceptors
 
@@ -468,36 +469,70 @@ extension RecordingRequest {
         }
     }
 
-    private func startLiveTranscription() async {
-        let (configuration, handler) = lock.withLock {
-            (liveTranscriptionConfiguration, liveTranscriptionHandler)
+    // ...
+
+    /// Adds a handler for completed transcript items.
+    @discardableResult
+    public func onItem(
+        _ handler: @escaping @Sendable (TranscriptItem) -> Void
+    ) -> Self {
+        lock.withLock {
+            self.transcriptItemHandler = handler
         }
-        guard let configuration, let handler else { return }
+        return self
+    }
+
+    private func startLiveTranscription() async {
+        let (configuration, liveHandler, itemHandler) = lock.withLock {
+            (liveTranscriptionConfiguration, liveTranscriptionHandler, transcriptItemHandler)
+        }
+        guard let configuration else { return }
+
+        // If no handlers are set, we might still run if configured?
+        // But usually we need at least one handler.
+        if liveHandler == nil && itemHandler == nil { return }
 
         Task {
-            let transcriber = Transcriber()
-            let bufferStream = await recorder.sendableAudioBufferStream
+            let bufferStream = await recorder.audioBufferStream
 
-            do {
-                let stream = await transcriber.transcribeStream(
-                    buffers: bufferStream, configuration: configuration
-                )
+            // Create a TranscriptionRequest to handle the logic (segmentation, etc.)
+            let request = TranscriptionRequest(
+                bufferStream: bufferStream,
+                configuration: configuration
+            )
 
-                for try await result in stream {
-                    handler(result)
+            // Forward partial results
+            if let liveHandler {
+                request.onProgress { progress in
+                    // Map progress back to basic result for backward compatibility if needed,
+                    // OR we just use the partial text from progress.
+                    // The old liveTranscriptionHandler expected TranscriptionResult.
+                    // We can construct it from progress.
+                    let result = TranscriptionResult(
+                        text: progress.partialText,
+                        segments: progress.segments.map {
+                            TranscriptionSegment(
+                                text: $0.text,
+                                timestamp: $0.timestamp,
+                                duration: $0.duration,
+                                confidence: $0.confidence
+                            )
+                        },
+                        isFinal: progress.isFinal,
+                        confidence: progress.confidence,
+                        speakingRate: progress.speakingRate
+                    )
+                    liveHandler(result)
                 }
-            } catch {
-                // Log or handle error?
-                // For live transcription, we might ideally report this via didFail,
-                // but doing so might stop the recording if we treat it as critical.
-                // For now, simpler to log or ignore, or report as non-fatal.
-                // Let's rely on the handler receiving error states if we had one?
-                // But handler only receives TranscriptionResult.
-                // We should probably allow the handler to receive completion/failure??
-                // The current API is (TranscriptionResult) -> Void.
-                // We'll leave error handling silent for this MVP or log.
-                print("Live transcription error: \(error)")
             }
+
+            // Forward items
+            if let itemHandler {
+                request.onItem(itemHandler)
+            }
+
+            // Run the request (it will finish when stream finishes)
+            _ = try? await request.run()
         }
     }
 }

@@ -16,13 +16,20 @@ final class RecordingViewModel {
     // MARK: - State
 
     var isRecording = false
-    var items: [TranscriptItem] = []
+    var items: [DemoTranscriptItem] = []
     var liveText: String = ""
 
     var lastRecordingURL: URL?
     var showError = false
     var errorMessage = ""
     var audioLevel: Float = 0
+    var selectedLocale: Locale = Locale(identifier: "en-US")
+    let availableLocales: [Locale] = [
+        Locale(identifier: "en-US"),
+        Locale(identifier: "vi-VN"),
+        Locale(identifier: "ja-JP"),
+        Locale(identifier: "ko-KR"),
+    ]
 
     // MARK: - Private State
 
@@ -60,10 +67,21 @@ final class RecordingViewModel {
             isRecording = true
 
             // Start recording via repository
+            let config = TranscriptionConfiguration(
+                locale: selectedLocale,
+                taskHint: .dictation
+            )
+
             let request = try await repository.startRecording(
+                configuration: config,
                 onTranscription: { [weak self] result in
                     Task { @MainActor [weak self] in
                         self?.handleTranscriptionUpdate(result)
+                    }
+                },
+                onItem: { [weak self] item in
+                    Task { @MainActor [weak self] in
+                        self?.handleItemAndTranslate(item)
                     }
                 },
                 onProgress: { [weak self] level in
@@ -101,76 +119,30 @@ final class RecordingViewModel {
 
     private func handleTranscriptionUpdate(_ result: TranscriptionResult) {
         liveText = result.text
-
-        var newItems: [TranscriptItem] = []
-
-        var currentSentence = ""
-        var sentenceStartTime: TimeInterval?
-        var sentenceDuration: TimeInterval = 0
-
-        // Helper to finalize a sentence
-        func finalizeSentence(isFinal: Bool) {
-            guard !currentSentence.isEmpty, let startTime = sentenceStartTime else { return }
-
-            let trimmed = currentSentence.trimmingCharacters(in: .whitespaces)
-
-            // Try to find existing item to preserve identity (for animation)
-            var idToUse = UUID()
-            if let existing = self.items.first(where: { abs($0.timestamp - startTime) < 0.001 }) {
-                idToUse = existing.id
-            }
-
-            var item = TranscriptItem(
-                id: idToUse,
-                text: trimmed,
-                isFinal: isFinal,  // Only the very last sentence is truly final if result.isFinal is true
-                timestamp: startTime,
-                duration: sentenceDuration
-            )
-            item.translation = translations[startTime]
-            newItems.append(item)
-
-            // Reset
-            currentSentence = ""
-            sentenceStartTime = nil
-            sentenceDuration = 0
-        }
-
-        for segment in result.segments {
-            if sentenceStartTime == nil {
-                sentenceStartTime = segment.timestamp
-            }
-
-            currentSentence += segment.text + " "
-            sentenceDuration += segment.duration
-
-            // Check for end of sentence punctuation
-            let trimmed = segment.text.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasSuffix(".") || trimmed.hasSuffix("?") || trimmed.hasSuffix("!") {
-                finalizeSentence(isFinal: true)  // Treat punctuated sentences as "stable"
-            }
-        }
-
-        // Add any remaining incomplete text as a "live" item or final item if result is final
-        if !currentSentence.isEmpty {
-            finalizeSentence(isFinal: result.isFinal)
-        }
-
-        // Fallback if no segments provided but text exists (shouldn't happen often)
-        if newItems.isEmpty && !result.text.isEmpty {
-            let item = TranscriptItem(
-                text: result.text,
-                isFinal: result.isFinal,
-                timestamp: Date().timeIntervalSince1970,  // Fallback timestamp
-                duration: 0
-            )
-            newItems.append(item)
-        }
-
-        self.items = newItems
     }
 
-    func translate(_ item: TranscriptItem) async {
+    private func handleItemAndTranslate(_ utteranceItem: TranscriptItem) {
+        // Map to local item
+        // We use Utterance item ID if possible, or create new.
+        // Demo Item expects UUID. Utterance Item has UUID.
+
+        let newItem = DemoTranscriptItem(
+            id: utteranceItem.id,
+            text: utteranceItem.text,
+            isFinal: true,
+            timestamp: utteranceItem.timeRange.lowerBound,
+            duration: utteranceItem.timeRange.upperBound - utteranceItem.timeRange.lowerBound
+        )
+
+        self.items.append(newItem)
+
+        // Auto-translate if needed (or simply placeholder)
+        Task {
+            await translate(newItem)
+        }
+    }
+
+    func translate(_ item: DemoTranscriptItem) async {
         guard item.translation == nil else { return }
 
         do {
@@ -184,6 +156,112 @@ final class RecordingViewModel {
             }
         } catch {
             showError(error)
+        }
+    }
+
+    // MARK: - File Transcription
+
+    func transcribeFile(_ url: URL) async {
+        guard url.startAccessingSecurityScopedResource() else {
+            // If it's a file from picker, we need security scope, though simple import usually copies it.
+            // If copied, we iterate.
+            return
+        }
+        defer { url.stopAccessingSecurityScopedResource() }
+
+        do {
+            isRecording = true
+            liveText = "Processing file..."
+            items = []
+            translations = [:]
+
+            // Use the file transcription API
+            // We can't use Repository.startRecording since that uses Recorder.
+            // We need a repository method for file, OR direct Utterance usage if Repository allows.
+            // For Demo, direct usage is fine to show API, but Repository abstraction is cleaner.
+            // Let's use UT directly here to demonstrate the Phase 05 API.
+
+            // Phase 05 API: UT.transcribe(file: url, configuration: .default)
+            // But we want streaming to populate items.
+            // TranscriptionRequest has .onItem chaining.
+
+            let config = TranscriptionConfiguration(
+                locale: selectedLocale,
+                taskHint: .dictation
+            )
+
+            let request = try await UT.transcribe(file: url, configuration: config)
+                .onPartialResult { [weak self] partial in
+                    Task { @MainActor [weak self] in
+                        self?.liveText = partial
+                    }
+                }
+                .onItem { [weak self] item in
+                    Task { @MainActor [weak self] in
+                        // Reuse same handler mapping logic
+                        self?.handleItemAndTranslate(item)
+                    }
+                }
+                .onProgress { [weak self] progress in
+                    Task { @MainActor [weak self] in
+                        // We can't update audioLevel easily from progress (it provides simple level? no)
+                        // Progress gives us percentage maybe?
+                        // TranscriptionProgress has segments but not 0-1 float for UI bar.
+                        // We'll just show spinner or indeterminate state?
+                        // Or use progress.speakingRate?
+                        // Let's just simulate activity.
+                        self?.audioLevel = Float.random(in: 0.1...0.5)
+                    }
+                }
+                .run()
+
+            // Finalize
+            isRecording = false
+            liveText = ""
+            lastRecordingURL = url
+
+        } catch {
+            showError(error)
+            isRecording = false
+            liveText = ""
+        }
+    }
+
+    // MARK: - Export
+
+    func exportTranscript(format: ExportFormat) -> URL? {
+        // Convert Demo items back to TranscriptItems for export
+        // Or construct Export items.
+        // ExportFormat expects [TranscriptItem].
+        // We have [DemoTranscriptItem].
+        // We map them.
+
+        // Note: DemoTranscriptItem and TranscriptItem share structure.
+        let sourceItems = items.map { demoItem in
+            TranscriptItem(
+                id: demoItem.id,
+                text: demoItem.text,
+                start: demoItem.timestamp,
+                end: demoItem.timestamp + demoItem.duration,
+                confidence: 1.0,  // Demo doesn't store confidence
+                alternatives: []
+            )
+        }
+
+        do {
+            let content = try TranscriptExporter.export(sourceItems, to: format)
+
+            // Write to temp file
+            let tempDir = FileManager.default.temporaryDirectory
+            let fileName =
+                "transcript_\(Date().formatted(date: .numeric, time: .omitted)).\(format.fileExtension)"
+            let fileURL = tempDir.appendingPathComponent(fileName)
+
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+            return fileURL
+        } catch {
+            showError(error)
+            return nil
         }
     }
 

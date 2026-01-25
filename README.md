@@ -84,6 +84,37 @@ struct DictationView: View {
 }
 ```
 
+### 3. File Transcription
+```swift
+// Transcribe an existing audio file
+let fileURL = Bundle.main.url(forResource: "interview", withExtension: "m4a")!
+
+let request = try await UT.transcribe(
+    file: fileURL, 
+    configuration: .english
+)
+.onProgress { progress in
+    print("Progress: \(Int(progress.percentage * 100))%")
+}
+.run()
+
+print("Full Text: \(request.text)")
+```
+
+### 4. Export Data (SRT, VTT, JSON)
+```swift
+import Utterance
+
+// Export transcript items to standard formats
+let items = result.segments.map { ... } 
+let srtURL = try TranscriptExporter.export(
+    items, 
+    to: .srt
+).write(to: tempURL)
+
+print("Exported to: \(srtURL)")
+```
+
 ## 🤝 Contributing
 
 We love contributions! Please read our [Contributing Guide](CONTRIBUTING.md) to get started.

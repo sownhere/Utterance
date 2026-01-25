@@ -38,19 +38,19 @@ import PipelineModels
 /// }
 /// ```
 public actor SpeechRecognizerManager {
-    
+
     // MARK: - Properties
-    
+
     /// Cached recognizers by locale identifier
     private var recognizers: [String: SFSpeechRecognizer] = [:]
-    
+
     // MARK: - Initialization
-    
+
     /// Creates a new speech recognizer manager.
     public init() {}
-    
+
     // MARK: - Recognizer Access
-    
+
     /// Gets or creates a speech recognizer for the specified locale.
     ///
     /// - Parameter locale: The locale for speech recognition
@@ -58,7 +58,7 @@ public actor SpeechRecognizerManager {
     /// - Throws: ``UtteranceError/transcription(_:)`` if not available
     public func getRecognizer(for locale: Locale) throws -> SFSpeechRecognizer {
         let identifier = locale.identifier
-        
+
         // Return cached recognizer if available
         if let cached = recognizers[identifier] {
             guard cached.isAvailable else {
@@ -66,35 +66,35 @@ public actor SpeechRecognizerManager {
             }
             return cached
         }
-        
+
         // Create new recognizer
         guard let recognizer = SFSpeechRecognizer(locale: locale) else {
             throw UtteranceError.transcription(.recognizerUnavailable(locale: identifier))
         }
-        
+
         // Check availability
         guard recognizer.isAvailable else {
             throw UtteranceError.transcription(.recognizerUnavailable(locale: identifier))
         }
-        
+
         recognizers[identifier] = recognizer
         return recognizer
     }
-    
+
     /// Removes a cached recognizer for the specified locale.
     ///
     /// - Parameter locale: The locale to remove
     public func removeRecognizer(for locale: Locale) {
         recognizers.removeValue(forKey: locale.identifier)
     }
-    
+
     /// Clears all cached recognizers.
     public func clearCache() {
         recognizers.removeAll()
     }
-    
+
     // MARK: - Authorization
-    
+
     /// Requests speech recognition authorization from the user.
     ///
     /// - Returns: The authorization status after the request
@@ -105,16 +105,16 @@ public actor SpeechRecognizerManager {
             }
         }
     }
-    
+
     /// Gets the current authorization status.
     ///
     /// - Returns: The current authorization status
     public nonisolated func authorizationStatus() -> SFSpeechRecognizerAuthorizationStatus {
         SFSpeechRecognizer.authorizationStatus()
     }
-    
+
     // MARK: - Locale Support
-    
+
     /// Checks if a locale is supported for speech recognition.
     ///
     /// - Parameter locale: The locale to check
@@ -122,11 +122,51 @@ public actor SpeechRecognizerManager {
     public nonisolated static func isSupported(locale: Locale) -> Bool {
         SFSpeechRecognizer.supportedLocales().contains(locale)
     }
-    
+
     /// Gets the set of supported locales for speech recognition.
     ///
     /// - Returns: Set of supported locales
     public nonisolated static var supportedLocales: Set<Locale> {
         SFSpeechRecognizer.supportedLocales()
+    }
+    // MARK: - Language Management
+
+    /// Checks if a locale is fully available for recognition (and optionally offline).
+    ///
+    /// - Parameters:
+    ///   - locale: The locale to check.
+    ///   - requireOnDevice: Whether to check specifically for on-device capability.
+    /// - Returns: `true` if available.
+    public func isLocaleAvailable(_ locale: Locale, requireOnDevice: Bool = false) async -> Bool {
+        do {
+            let recognizer = try getRecognizer(for: locale)
+            if requireOnDevice {
+                return recognizer.supportsOnDeviceRecognition
+            }
+            return recognizer.isAvailable
+        } catch {
+            return false
+        }
+    }
+
+    /// Triggers a system prompt to download the offline model for a locale.
+    ///
+    /// This attempts to perform a short on-device recognition to trigger the system's download mechanism.
+    /// Note: This is "best effort" as Apple does not provide a direct download API.
+    ///
+    /// - Parameter locale: The locale to download.
+    public func requestOfflineModelDownload(for locale: Locale) async {
+        guard let recognizer = SFSpeechRecognizer(locale: locale) else { return }
+
+        let req = SFSpeechAudioBufferRecognitionRequest()
+        req.requiresOnDeviceRecognition = true
+
+        // We start a task and immediately cancel it.
+        // This often triggers the OS to check model availability and prompt the user.
+        let task = recognizer.recognitionTask(with: req) { _, _ in }
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)  // 0.5s
+            task.cancel()
+        }
     }
 }

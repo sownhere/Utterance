@@ -62,6 +62,7 @@ public final class TranscriptionRequest: @unchecked Sendable {
 
     private var partialResultHandler: (@Sendable (String) -> Void)?
     private var progressHandler: (@Sendable (TranscriptionProgress) -> Void)?
+    private var transcriptItemHandler: (@Sendable (TranscriptItem) -> Void)?
     private var willStartHandler: VoidHandler?
     private var didCompleteHandler: (@Sendable (TranscriptionResult) -> Void)?
     private var didFailHandler: ErrorHandler?
@@ -149,13 +150,79 @@ extension TranscriptionRequest: PipelineRequest {
 
             if let fileURL = sourceFileURL {
                 // File-based transcription
-                result = try await transcriber.transcribe(
+
+                // Initialize statement separator (using default 1.5s threshold for now)
+                let separator = StatementSeparator(silenceThreshold: 1.5)
+
+                var finalResult: TranscriptionResult?
+
+                let stream = await transcriber.transcribeFileStream(
                     fileURL: fileURL,
                     configuration: configuration
                 )
+
+                var lastPartialTime: TimeInterval = 0
+
+                for try await partialResult in stream {
+                    // Report partial results
+                    let (partialHandler, progHandler, itemHandler) = lock.withLock {
+                        (partialResultHandler, progressHandler, transcriptItemHandler)
+                    }
+
+                    partialHandler?(partialResult.text)
+
+                    // Process segments for Items
+                    let currentTime = partialResult.segments.last?.timestamp ?? lastPartialTime
+                    lastPartialTime = currentTime
+
+                    // Note: For file transcription, 'timestamp' from result is relative to file start which is correct.
+                    // We can be more aggressive with splitting since we have full context potentially,
+                    // but the separator logic holds.
+
+                    let newItems = separator.process(
+                        text: partialResult.text,
+                        timestamp: currentTime + (partialResult.segments.last?.duration ?? 0),
+                        isFinal: partialResult.isFinal
+                    )
+
+                    // Emit distinct items
+                    for item in newItems {
+                        itemHandler?(item)
+                    }
+
+                    let progress = TranscriptionProgress(
+                        partialText: partialResult.text,
+                        confidence: partialResult.confidence,
+                        isFinal: partialResult.isFinal,
+                        segments: partialResult.segments.map { segment in
+                            TranscriptionSegment(
+                                text: segment.text,
+                                timestamp: segment.timestamp,
+                                duration: segment.duration,
+                                confidence: segment.confidence
+                            )
+                        },
+                        speakingRate: partialResult.speakingRate
+                    )
+                    progHandler?(progress)
+
+                    if partialResult.isFinal {
+                        finalResult = partialResult
+                        break
+                    }
+                }
+
+                guard let final = finalResult else {
+                    throw UtteranceError.transcription(.noSpeechDetected)
+                }
+                result = final
             } else if let bufferStream = sourceBufferStream {
                 // Stream-based transcription
                 var finalResult: TranscriptionResult?
+
+                // Initialize statement separator (using default 1.5s threshold for now)
+                // TODO: Make threshold configurable via TranscriptionConfiguration
+                let separator = StatementSeparator(silenceThreshold: 1.5)
 
                 // Wrap bufferStream to silence Sendable warning (we accept ownership here)
                 struct UnsafeStreamWrapper: @unchecked Sendable {
@@ -178,14 +245,37 @@ extension TranscriptionRequest: PipelineRequest {
                     configuration: configuration
                 )
 
+                // Track time for silence detection
+                var lastPartialTime: TimeInterval = 0
+
+                // Create a sub-task to monitor silence independently of stream updates
+                // logical clock approach: we only check silence when we get data or timer ticks
+                // Ideally this should be a separate Task checking `separator.checkSilence`
+                // but for V1 we hook into the stream loop + periodic check.
+
                 for try await partialResult in stream {
                     // Report partial results
                     // Retrieve handlers safely for each iteration
-                    let (partialHandler, progHandler) = lock.withLock {
-                        (partialResultHandler, progressHandler)
+                    let (partialHandler, progHandler, itemHandler) = lock.withLock {
+                        (partialResultHandler, progressHandler, transcriptItemHandler)
                     }
 
                     partialHandler?(partialResult.text)
+
+                    // Process segments for Items
+                    let currentTime = partialResult.segments.last?.timestamp ?? lastPartialTime
+                    lastPartialTime = currentTime
+
+                    let newItems = separator.process(
+                        text: partialResult.text,
+                        timestamp: currentTime + (partialResult.segments.last?.duration ?? 0),
+                        isFinal: partialResult.isFinal
+                    )
+
+                    // Emit distinct items
+                    for item in newItems {
+                        itemHandler?(item)
+                    }
 
                     let progress = TranscriptionProgress(
                         partialText: partialResult.text,
@@ -198,7 +288,8 @@ extension TranscriptionRequest: PipelineRequest {
                                 duration: segment.duration,
                                 confidence: segment.confidence
                             )
-                        }
+                        },
+                        speakingRate: partialResult.speakingRate
                     )
                     progHandler?(progress)
 
@@ -293,6 +384,17 @@ extension TranscriptionRequest {
     ) -> Self {
         lock.withLock {
             self.progressHandler = handler
+        }
+        return self
+    }
+
+    /// Adds a handler for completed transcript items (smart segments).
+    @discardableResult
+    public func onItem(
+        _ handler: @escaping @Sendable (TranscriptItem) -> Void
+    ) -> Self {
+        lock.withLock {
+            self.transcriptItemHandler = handler
         }
         return self
     }

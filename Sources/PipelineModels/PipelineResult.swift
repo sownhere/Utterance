@@ -29,16 +29,16 @@ import Foundation
 /// Contains information about the recorded audio file including its location,
 /// duration, and format.
 public struct RecordingResult: Sendable, Hashable {
-    
+
     /// URL of the recorded audio file
     public let fileURL: URL
-    
+
     /// Duration of the recording in seconds
     public let duration: TimeInterval
-    
+
     /// Format of the recorded audio
     public let format: RecordingConfiguration.AudioFormat
-    
+
     /// Creates a new recording result.
     ///
     /// - Parameters:
@@ -59,19 +59,22 @@ public struct RecordingResult: Sendable, Hashable {
 /// Contains the transcribed text along with detailed segment information
 /// and confidence levels.
 public struct TranscriptionResult: Sendable, Hashable {
-    
+
     /// The complete transcribed text
     public let text: String
-    
+
     /// Individual segments with timing information
     public let segments: [TranscriptionSegment]
-    
+
     /// Whether this is the final result (no more updates expected)
     public let isFinal: Bool
-    
+
     /// Overall confidence level (0.0 to 1.0)
     public let confidence: Float
-    
+
+    /// Estimated speaking rate in words per minute
+    public let speakingRate: Double
+
     /// Creates a new transcription result.
     ///
     /// - Parameters:
@@ -79,34 +82,37 @@ public struct TranscriptionResult: Sendable, Hashable {
     ///   - segments: Individual segments with timing information
     ///   - isFinal: Whether this is the final result
     ///   - confidence: Overall confidence level
+    ///   - speakingRate: Estimated words per minute
     public init(
         text: String,
         segments: [TranscriptionSegment] = [],
         isFinal: Bool = true,
-        confidence: Float = 1.0
+        confidence: Float = 1.0,
+        speakingRate: Double = 0.0
     ) {
         self.text = text
         self.segments = segments
         self.isFinal = isFinal
         self.confidence = confidence
+        self.speakingRate = speakingRate
     }
 }
 
 /// A segment of transcribed speech with timing information.
 public struct TranscriptionSegment: Sendable, Hashable {
-    
+
     /// The transcribed text for this segment
     public let text: String
-    
+
     /// Start time of this segment in seconds from the beginning
     public let timestamp: TimeInterval
-    
+
     /// Duration of this segment in seconds
     public let duration: TimeInterval
-    
+
     /// Confidence level for this segment (0.0 to 1.0)
     public let confidence: Float
-    
+
     /// Creates a new transcription segment.
     ///
     /// - Parameters:
@@ -133,19 +139,19 @@ public struct TranscriptionSegment: Sendable, Hashable {
 ///
 /// Contains the original and translated text along with language information.
 public struct TranslationResult: Sendable, Hashable {
-    
+
     /// The original text before translation
     public let originalText: String
-    
+
     /// The translated text
     public let translatedText: String
-    
+
     /// The source language
     public let sourceLanguage: Locale.Language
-    
+
     /// The target language
     public let targetLanguage: Locale.Language
-    
+
     /// Creates a new translation result.
     ///
     /// - Parameters:
@@ -172,16 +178,16 @@ public struct TranslationResult: Sendable, Hashable {
 ///
 /// Contains results from recording, transcription, and optionally translation.
 public struct PipelineResult: Sendable {
-    
+
     /// The recording result (if recording was performed)
     public let recording: RecordingResult?
-    
+
     /// The transcription result
     public let transcription: TranscriptionResult
-    
+
     /// The translation result (if translation was performed)
     public let translation: TranslationResult?
-    
+
     /// Creates a new pipeline result.
     ///
     /// - Parameters:

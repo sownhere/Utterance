@@ -2,7 +2,7 @@ import SwiftUI
 import Utterance
 
 struct TranscriptBubble: View {
-    let item: TranscriptItem
+    let item: DemoTranscriptItem
     let isLive: Bool
     let onTranslate: () -> Void
 

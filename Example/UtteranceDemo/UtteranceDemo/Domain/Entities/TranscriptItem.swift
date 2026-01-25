@@ -1,7 +1,7 @@
 import Foundation
 
 /// Represents a single item in the transcript (e.g., a sentence or phrase).
-struct TranscriptItem: Identifiable, Equatable {
+struct DemoTranscriptItem: Identifiable, Equatable {
     let id: UUID
     var text: String
     var translation: String?
@@ -24,7 +24,7 @@ struct TranscriptItem: Identifiable, Equatable {
     }
 
     // Check if content matches to decide about updating vs replacing
-    static func == (lhs: TranscriptItem, rhs: TranscriptItem) -> Bool {
+    static func == (lhs: DemoTranscriptItem, rhs: DemoTranscriptItem) -> Bool {
         lhs.id == rhs.id && lhs.text == rhs.text && lhs.translation == rhs.translation
             && lhs.isFinal == rhs.isFinal
     }
