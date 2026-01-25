@@ -9,12 +9,17 @@ import Utterance
 final class RecordingRepository: RecordingRepositoryProtocol, @unchecked Sendable {
 
     func startRecording(
+        configuration: TranscriptionConfiguration,
         onTranscription: @escaping @Sendable (TranscriptionResult) -> Void,
+        onItem: @escaping @Sendable (TranscriptItem) -> Void,
         onProgress: @escaping @Sendable (Float) -> Void
     ) async throws -> RecordingRequest {
         let request = UT.record(.default)
-            .liveTranscription(configuration: .default) { result in
+            .liveTranscription(configuration: configuration) { result in
                 onTranscription(result)
+            }
+            .onItem { item in
+                onItem(item)
             }
             .onProgress { progress in
                 onProgress(progress.averageLevel)

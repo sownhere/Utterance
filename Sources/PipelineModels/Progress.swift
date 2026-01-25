@@ -48,16 +48,21 @@ public struct TranscriptionProgress: Sendable {
     /// Segments with timestamps (uses existing TranscriptionSegment from PipelineResult).
     public let segments: [TranscriptionSegment]
 
+    /// Estimated speaking rate in words per minute.
+    public let speakingRate: Double
+
     public init(
         partialText: String,
         confidence: Float = 0,
         isFinal: Bool = false,
-        segments: [TranscriptionSegment] = []
+        segments: [TranscriptionSegment] = [],
+        speakingRate: Double = 0.0
     ) {
         self.partialText = partialText
         self.confidence = confidence
         self.isFinal = isFinal
         self.segments = segments
+        self.speakingRate = speakingRate
     }
 }
 

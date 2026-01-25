@@ -12,7 +12,9 @@ protocol RecordingRepositoryProtocol: Sendable {
     ///   - onProgress: Callback for audio level progress
     /// - Returns: Recording request handle
     func startRecording(
+        configuration: TranscriptionConfiguration,
         onTranscription: @escaping @Sendable (TranscriptionResult) -> Void,
+        onItem: @escaping @Sendable (TranscriptItem) -> Void,
         onProgress: @escaping @Sendable (Float) -> Void
     ) async throws -> RecordingRequest
 

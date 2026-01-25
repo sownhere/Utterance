@@ -31,12 +31,13 @@ public struct SendableRecognitionResult: @unchecked Sendable {
     public let isFinal: Bool
     public let segments: [TranscriptionSegment]
     public let confidence: Float
-    
+    public let speakingRate: Double
+
     init(from result: SFSpeechRecognitionResult) {
         let transcription = result.bestTranscription
         self.text = transcription.formattedString
         self.isFinal = result.isFinal
-        
+
         self.segments = transcription.segments.map { segment in
             TranscriptionSegment(
                 text: segment.substring,
@@ -45,20 +46,24 @@ public struct SendableRecognitionResult: @unchecked Sendable {
                 confidence: segment.confidence
             )
         }
-        
+
         if self.segments.isEmpty {
             self.confidence = 1.0
         } else {
-            self.confidence = self.segments.reduce(0) { $0 + $1.confidence } / Float(self.segments.count)
+            self.confidence =
+                self.segments.reduce(0) { $0 + $1.confidence } / Float(self.segments.count)
         }
+
+        self.speakingRate = result.speechRecognitionMetadata?.speakingRate ?? 0.0
     }
-    
+
     func toTranscriptionResult() -> TranscriptionResult {
         TranscriptionResult(
             text: text,
             segments: segments,
             isFinal: isFinal,
-            confidence: confidence
+            confidence: confidence,
+            speakingRate: speakingRate
         )
     }
 }
@@ -68,21 +73,21 @@ public struct SendableRecognitionResult: @unchecked Sendable {
 /// This class wraps `SFSpeechRecognitionTask` to provide a modern async interface
 /// for streaming recognition results.
 public final class RecognitionTaskManager: @unchecked Sendable {
-    
+
     // MARK: - Properties
-    
+
     private var currentTask: SFSpeechRecognitionTask?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var resultContinuation: AsyncThrowingStream<TranscriptionResult, Error>.Continuation?
     private let lock = NSLock()
-    
+
     // MARK: - Initialization
-    
+
     /// Creates a new recognition task manager.
     public init() {}
-    
+
     // MARK: - Task Control
-    
+
     /// Creates and configures a recognition request.
     ///
     /// - Parameter configuration: The transcription configuration
@@ -92,25 +97,26 @@ public final class RecognitionTaskManager: @unchecked Sendable {
     ) -> SFSpeechAudioBufferRecognitionRequest {
         lock.lock()
         defer { lock.unlock() }
-        
+
         let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
+        request.shouldReportPartialResults = configuration.shouldReportPartialResults
+        request.addsPunctuation = configuration.addsPunctuation
         request.taskHint = configuration.taskHint.speechTaskHint
-        
+
         // Configure on-device recognition if required
         if configuration.requiresOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
         }
-        
+
         // Add contextual strings for custom vocabulary
         if !configuration.contextualStrings.isEmpty {
             request.contextualStrings = configuration.contextualStrings
         }
-        
+
         self.request = request
         return request
     }
-    
+
     /// Starts recognition with the given recognizer and request.
     ///
     /// - Parameters:
@@ -125,21 +131,21 @@ public final class RecognitionTaskManager: @unchecked Sendable {
             self?.lock.lock()
             self?.resultContinuation = continuation
             self?.lock.unlock()
-            
+
             let task = recognizer.recognitionTask(with: request) { [weak self] result, error in
                 self?.handleResult(result, error: error)
             }
-            
+
             self?.lock.lock()
             self?.currentTask = task
             self?.lock.unlock()
-            
+
             continuation.onTermination = { [weak self] _ in
                 self?.cancel()
             }
         }
     }
-    
+
     /// Appends an audio buffer to the recognition request.
     ///
     /// - Parameter buffer: The audio buffer to append
@@ -149,7 +155,7 @@ public final class RecognitionTaskManager: @unchecked Sendable {
         lock.unlock()
         req?.append(buffer)
     }
-    
+
     /// Signals the end of audio input.
     public func endAudio() {
         lock.lock()
@@ -157,7 +163,7 @@ public final class RecognitionTaskManager: @unchecked Sendable {
         lock.unlock()
         req?.endAudio()
     }
-    
+
     /// Cancels the current recognition task.
     public func cancel() {
         lock.lock()
@@ -168,44 +174,44 @@ public final class RecognitionTaskManager: @unchecked Sendable {
         resultContinuation = nil
         lock.unlock()
     }
-    
+
     // MARK: - Status
-    
+
     /// Whether a recognition task is currently active.
     public var isActive: Bool {
         lock.lock()
         defer { lock.unlock() }
         return currentTask != nil && currentTask?.state == .running
     }
-    
+
     // MARK: - Private Methods
-    
+
     private func handleResult(_ result: SFSpeechRecognitionResult?, error: Error?) {
         lock.lock()
         let continuation = resultContinuation
         lock.unlock()
-        
+
         if let error = error {
             let utteranceError = mapError(error)
             continuation?.finish(throwing: utteranceError)
             cleanup()
             return
         }
-        
+
         guard let result = result else { return }
-        
+
         let sendable = SendableRecognitionResult(from: result)
         continuation?.yield(sendable.toTranscriptionResult())
-        
+
         if result.isFinal {
             continuation?.finish()
             cleanup()
         }
     }
-    
+
     private func mapError(_ error: Error) -> UtteranceError {
         let nsError = error as NSError
-        
+
         // Check for specific Speech framework errors
         if nsError.domain == "kAFAssistantErrorDomain" {
             switch nsError.code {
@@ -217,10 +223,10 @@ public final class RecognitionTaskManager: @unchecked Sendable {
                 break
             }
         }
-        
+
         return .transcription(.recognitionFailed(reason: error.localizedDescription))
     }
-    
+
     private func cleanup() {
         lock.lock()
         currentTask = nil

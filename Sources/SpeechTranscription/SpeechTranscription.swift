@@ -216,6 +216,83 @@ public actor Transcriber: SpeechTranscribing {
 
     // MARK: - File Transcription
 
+    /// Transcribes audio from a file URL with streaming updates.
+    ///
+    /// - Parameters:
+    ///   - fileURL: URL of the audio file to transcribe
+    ///   - configuration: The transcription configuration
+    /// - Returns: Async stream of transcription results
+    public func transcribeFileStream(
+        fileURL: URL,
+        configuration: TranscriptionConfiguration
+    ) -> AsyncThrowingStream<TranscriptionResult, Error> {
+        let recognizerManager = self.recognizerManager
+
+        return AsyncThrowingStream { continuation in
+            _ = Task { @Sendable in
+                do {
+                    // Request authorization
+                    let status = await recognizerManager.requestAuthorization()
+                    guard status == .authorized else {
+                        continuation.finish(
+                            throwing: UtteranceError.permission(.speechRecognitionNotAuthorized))
+                        return
+                    }
+
+                    // Get recognizer
+                    let recognizer = try await recognizerManager.getRecognizer(
+                        for: configuration.locale)
+
+                    // Create URL-based request
+                    let request = SFSpeechURLRecognitionRequest(url: fileURL)
+                    request.shouldReportPartialResults = true  // Enable partials for progress
+                    request.taskHint = configuration.taskHint.speechTaskHint
+
+                    if !configuration.contextualStrings.isEmpty {
+                        request.contextualStrings = configuration.contextualStrings
+                    }
+
+                    if configuration.requiresOnDeviceRecognition {
+                        request.requiresOnDeviceRecognition = true
+                    }
+
+                    if configuration.addsPunctuation {
+                        request.addsPunctuation = true
+                    }
+
+                    // Start recognition task
+                    let recognitionTask = recognizer.recognitionTask(with: request) {
+                        result, error in
+                        if let error = error {
+                            continuation.finish(
+                                throwing: UtteranceError.transcription(
+                                    .recognitionFailed(reason: error.localizedDescription)
+                                ))
+                            return
+                        }
+
+                        guard let result = result else { return }
+
+                        let sendable = SendableRecognitionResult(from: result)
+                        continuation.yield(sendable.toTranscriptionResult())
+
+                        if result.isFinal {
+                            continuation.finish()
+                        }
+                    }
+
+                    // Handle cancellation
+                    continuation.onTermination = { _ in
+                        recognitionTask.cancel()
+                    }
+
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     /// Transcribes audio from a file URL.
     ///
     /// - Parameters:
@@ -247,6 +324,10 @@ public actor Transcriber: SpeechTranscribing {
 
         if configuration.requiresOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
+        }
+
+        if configuration.addsPunctuation {
+            request.addsPunctuation = true
         }
 
         // Perform recognition using async/await wrapper

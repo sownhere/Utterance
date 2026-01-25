@@ -1,21 +1,92 @@
 import SwiftUI
+internal import UniformTypeIdentifiers
+import Utterance
 
 /// Main view demonstrating Utterance recording and transcription.
 struct RecordingView: View {
     @Bindable var viewModel: RecordingViewModel
 
+    @State private var isImporting = false
+    @State private var exportURLWrapper: URLWrapper?
+    @State private var showLanguageSettings = false
+
     var body: some View {
         ZStack(alignment: .bottom) {
             transcriptList
             bottomControlArea
-                .allowsHitTesting(false)
         }
         .navigationTitle("Utterance")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        isImporting = true
+                    } label: {
+                        Label("Import Audio", systemImage: "folder")
+                    }
+
+                    Menu("Export Transcript") {
+                        Button("SRT") { export(.srt) }
+                        Button("VTT") { export(.vtt) }
+                        Button("JSON") { export(.json) }
+                    }
+
+                    Divider()
+
+                    Picker("Language", selection: $viewModel.selectedLocale) {
+                        ForEach(viewModel.availableLocales, id: \.identifier) { locale in
+                            Text(locale.identifier).tag(locale)
+                        }
+                    }
+
+                    Button {
+                        showLanguageSettings = true
+                    } label: {
+                        Label("Manage Languages", systemImage: "arrow.down.circle")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
+        }
+        .navigationDestination(isPresented: $showLanguageSettings) {
+            LanguageSettingsView()
+        }
+        .fileImporter(
+            isPresented: $isImporting,
+            allowedContentTypes: [.audio],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                Task {
+                    await viewModel.transcribeFile(url)
+                }
+            case .failure(let error):
+                print("Import failed: \(error.localizedDescription)")
+            }
+        }
+        .sheet(item: $exportURLWrapper) { wrapper in
+            ShareSheet(url: wrapper.url)
+        }
         .alert("Error", isPresented: $viewModel.showError) {
             Button("OK") {}
         } message: {
             Text(viewModel.errorMessage)
+        }
+    }
+
+    // Helper for Identifiable sheet
+    struct URLWrapper: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
+
+    private func export(_ format: ExportFormat) {
+        if let url = viewModel.exportTranscript(format: format) {
+            exportURLWrapper = URLWrapper(url: url)
         }
     }
 
@@ -68,7 +139,7 @@ struct RecordingView: View {
 
                 // Live Item
                 if viewModel.isRecording && !viewModel.liveText.isEmpty {
-                    let liveItem = TranscriptItem(text: viewModel.liveText, isFinal: false)
+                    let liveItem = DemoTranscriptItem(text: viewModel.liveText, isFinal: false)
                     TranscriptBubble(item: liveItem, isLive: true) {}
                         .id(ScrollTarget.live)
                 }
@@ -126,6 +197,7 @@ struct RecordingView: View {
 
             // Record Button
             recordButton
+                .allowsHitTesting(true)
                 .padding(.bottom, 20)
         }
         .frame(height: 180)
@@ -170,6 +242,16 @@ struct RecordingView: View {
         }
         .buttonStyle(.plain)
     }
+}
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 #Preview {
