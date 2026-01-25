@@ -1,0 +1,51 @@
+name: Documentation
+
+on:
+    push:
+        branches: ["main"]
+
+permissions:
+    contents: write
+    pages: write
+    id-token: write
+
+concurrency:
+    group: "pages"
+    cancel-in-progress: true
+
+jobs:
+    build-docs:
+        runs-on: macos-15
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Build DocC
+              run: |
+                  swift package \
+                    --allow-writing-to-directory ./docs \
+                    generate-documentation \
+                    --target Utterance \
+                    --disable-indexing \
+                    --transform-for-static-hosting \
+                    --hosting-base-path Utterance \
+                    --output-path ./docs
+
+            - name: Fix 404 (Add .nojekyll)
+              run: touch ./docs/.nojekyll
+
+            - name: Upload artifact
+              uses: actions/upload-pages-artifact@v3
+              with:
+                  path: ./docs
+
+    deploy:
+        environment:
+            name: github-pages
+            url: ${{ steps.deployment.outputs.page_url }}
+        runs-on: ubuntu-latest
+        needs: build-docs
+        steps:
+            - name: Deploy to GitHub Pages
+              id: deployment
+              uses: actions/deploy-pages@v4

@@ -1,0 +1,48 @@
+name: Utterance CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  # 1. Verification of Modular Integrity
+  build-modules:
+    name: Build Individual Modules
+    runs-on: macos-15
+    strategy:
+      matrix:
+        product:
+          [
+            "UtteranceAudio",
+            "UtteranceTranscript",
+            "UtteranceTranslation",
+            "UtteranceCore",
+          ]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.product }}
+        run: swift build --product ${{ matrix.product }}
+
+  # 2. Run All Tests
+  test-suite:
+    name: Run Tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Tests
+        run: swift test --parallel
+
+  # 3. Build Demo App (iOS Integrity)
+  build-demo:
+    name: Build Demo App (iOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build iOS Demo
+        run: |
+          xcodebuild -project "Example/UtteranceDemo/UtteranceDemo.xcodeproj" \
+                     -scheme "UtteranceDemo" \
+                     -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+                     -quiet build
